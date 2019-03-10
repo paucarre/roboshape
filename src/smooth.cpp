@@ -44,6 +44,18 @@
 #include <numeric>  
 #include <iostream>
 
+struct BorderingPoints {
+  uint32_t source_point;
+  uint32_t source_primitive;
+  uint32_t destination_point;
+  uint32_t destination_primitive;
+  BorderingPoints(uint32_t _source_point, uint32_t _source_primitive,  uint32_t _destination_point, uint32_t _destination_primitive) : 
+    source_point(_source_point), source_primitive(_source_primitive), destination_point(_destination_point), destination_primitive(_destination_primitive) {}
+} ;
+
+
+
+
 boost::optional<std::string> get_ply_path(int argc, char** argv) {
     const char* HELP = "help";
     const char* PATH = "path";
@@ -88,35 +100,6 @@ pcl::PolygonMesh::Ptr load_mesh(std::string ply_path) {
     return mesh;
 }
 
-Eigen::Vector3f extract_normal(pcl::Vertices const& polygon, pcl::PointCloud<pcl::PointXYZ> &point_cloud, Eigen::Vector3f &center) {
-    auto point_1 = point_cloud[polygon.vertices[0]];
-    auto point_2 = point_cloud[polygon.vertices[1]];
-    auto point_3 = point_cloud[polygon.vertices[2]];
-    Eigen::Vector3f point_1_eig(point_1.x, point_1.y, point_1.z);
-    Eigen::Vector3f point_2_eig(point_2.x, point_2.y, point_2.z);
-    Eigen::Vector3f point_3_eig(point_3.x, point_3.y, point_3.z);
-    
-    Eigen::Vector3f vector_1_2 = point_2_eig - point_1_eig;
-    Eigen::Vector3f vector_1_3 = point_3_eig - point_1_eig;
-    Eigen::Vector3f vector_normal = vector_1_2.cross(vector_1_3); 
-    vector_normal.normalize();
-
-    Eigen::Vector3f centroid = (point_1_eig + point_2_eig + point_3_eig) / 3.0;
-    if((centroid - center).adjoint() * vector_normal < 0.0 ){
-        vector_normal = -vector_normal;
-    }
-    return vector_normal;
-}
-
-Eigen::Vector3f compute_center(pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud) {
-    Eigen::Vector3f sum = Eigen::Vector3f::Zero();
-    for(pcl::PointXYZ point : point_cloud->points) {
-        Eigen::Vector3f point_eigen(point.x, point.y, point.z);
-        sum = sum + point_eigen;
-    }    
-    return sum / point_cloud->points.size();
-}
-
 struct MeshTraits {
     typedef pcl::PointXYZ         VertexData;
     typedef pcl::geometry::NoData HalfEdgeData;
@@ -124,20 +107,11 @@ struct MeshTraits {
     typedef pcl::Normal           FaceData;
     typedef boost::false_type IsManifold;
 };
+
 typedef pcl::geometry::PolygonMesh <MeshTraits> Mesh;
 
-void printEdge (const Mesh& mesh, const Mesh::HalfEdgeIndex& idx_he) {
-  std::cout << "  "
-            << mesh.getVertexDataCloud () [mesh.getOriginatingVertexIndex (idx_he).get ()]
-            << " "
-            << mesh.getVertexDataCloud () [mesh.getTerminatingVertexIndex (idx_he).get ()]
-            << std::endl;
-}
-
-void extract_point_index_to_normals(pcl::PolygonMesh &polygon_mesh, pcl::PointCloud<pcl::PointXYZ> &point_cloud,
-        std::shared_ptr<std::map<uint32_t, std::vector<Eigen::Vector3f>>> point_index_to_normals) {
-    Mesh mesh;
-    Mesh::VertexIndices vertex_indices;
+void generate_mesh(pcl::PolygonMesh &polygon_mesh, pcl::PointCloud<pcl::PointXYZ> &point_cloud,  
+        Mesh& mesh, Mesh::VertexIndices& vertex_indices) {
     for(pcl::PointXYZ const& vertex : point_cloud.points) {
        vertex_indices.push_back(mesh.addVertex (vertex));
     }
@@ -148,6 +122,13 @@ void extract_point_index_to_normals(pcl::PolygonMesh &polygon_mesh, pcl::PointCl
         }
         mesh.addFace(face);
     }
+}
+
+void extract_point_index_to_normals(pcl::PolygonMesh &polygon_mesh, pcl::PointCloud<pcl::PointXYZ> &point_cloud,    
+        std::shared_ptr<std::map<uint32_t, std::vector<Eigen::Vector3f>>> point_index_to_normals) {
+    Mesh::VertexIndices vertex_indices;            
+    Mesh mesh;
+    generate_mesh(polygon_mesh, point_cloud, mesh, vertex_indices);
     for(uint32_t point_index = 0 ; point_index < vertex_indices.size() ; ++point_index) {
         auto outgoing_half_edges = mesh.getOutgoingHalfEdgeAroundVertexCirculator(vertex_indices[point_index]);
         auto outgoing_half_edges_end = outgoing_half_edges;
@@ -160,7 +141,7 @@ void extract_point_index_to_normals(pcl::PolygonMesh &polygon_mesh, pcl::PointCl
             Eigen::Vector3f terminating_vector(terminating.x, terminating.y, terminating.z);
             Eigen::Vector3f current_vector = terminating_vector - origin_vector;
             if(previous_vector) {
-                Eigen::Vector3f normal = -(*previous_vector).cross(current_vector); 
+                Eigen::Vector3f normal = (*previous_vector).cross(current_vector); 
                 normal.normalize();
                 auto vertices_iterator = point_index_to_normals->find(point_index);
                 if (vertices_iterator == point_index_to_normals->end()) {
@@ -174,26 +155,8 @@ void extract_point_index_to_normals(pcl::PolygonMesh &polygon_mesh, pcl::PointCl
     }
 }
 
-void extract_point_index_to_normals_old(pcl::PolygonMesh &mesh, Eigen::Vector3f &center, 
-        std::shared_ptr<std::map<uint32_t, std::vector<Eigen::Vector3f>>> &point_index_to_normals) {
-    pcl::PointCloud<pcl::PointNormal>::Ptr outputCloud(new pcl::PointCloud<pcl::PointNormal>);     
-    pcl::PointCloud<pcl::PointXYZ> point_cloud;
-    pcl::fromPCLPointCloud2(mesh.cloud, point_cloud);
-    for(pcl::Vertices const& polygon : mesh.polygons) {
-        Eigen::Vector3f normal = extract_normal(polygon, point_cloud, center);
-        for(uint32_t point_index : polygon.vertices) {
-            auto vertices_iterator = point_index_to_normals->find(point_index);
-            if (vertices_iterator == point_index_to_normals->end()) { // not found
-                (*point_index_to_normals)[point_index] = { normal };
-            } else {
-                vertices_iterator->second.push_back(normal);
-            }
-        }
-    }           
-}
-
 void extract_normals(pcl::PolygonMesh &mesh, pcl::PointCloud<pcl::PointXYZ> &point_cloud, 
-        pcl::PointCloud<pcl::Normal>::Ptr &output_normals)  {
+        pcl::PointCloud<pcl::PointNormal>::Ptr &output_normals)  {
     cout << "Starting normal extraction..." << std::endl; 
     std::shared_ptr<std::map<uint32_t, std::vector<Eigen::Vector3f>>> point_index_to_normals (new std::map<uint32_t, std::vector<Eigen::Vector3f>>);
     extract_point_index_to_normals(mesh, point_cloud, point_index_to_normals);
@@ -204,14 +167,16 @@ void extract_normals(pcl::PolygonMesh &mesh, pcl::PointCloud<pcl::PointXYZ> &poi
             for(auto const& normal : normals_iterator->second){
                 sum_of_normals = sum_of_normals + normal;
             }
-            sum_of_normals.normalize(); 
-            pcl::Normal normal = pcl::Normal();
-            normal.normal_x = sum_of_normals[0];
-            normal.normal_y = sum_of_normals[1];
-            normal.normal_z = sum_of_normals[2];
-            output_normals->points.push_back(normal);            
-        } else {
-            //cout << "WARNING: point without normal found." << std::endl;     
+            sum_of_normals.normalize();
+            pcl::PointNormal point_normal = pcl::PointNormal();
+            point_normal.normal_x = sum_of_normals[0];
+            point_normal.normal_y = sum_of_normals[1];
+            point_normal.normal_z = sum_of_normals[2];
+            pcl::PointXYZ point = point_cloud.points[point_index];
+            point_normal.x = point.x;
+            point_normal.y = point.y;
+            point_normal.z = point.z;
+            output_normals->points.push_back(point_normal);            
         }
     }
     cout << "... end of normal extraction." << std::endl;     
@@ -219,59 +184,201 @@ void extract_normals(pcl::PolygonMesh &mesh, pcl::PointCloud<pcl::PointXYZ> &poi
 
 pcl::visualization::PCLVisualizer::Ptr visualize(pcl::PolygonMesh::Ptr mesh,
         pcl::PointCloud<pcl::PointXYZ>::ConstPtr cloud, 
-        pcl::PointCloud<pcl::Normal>::ConstPtr normals) {
+        pcl::PointCloud<pcl::PointNormal>::ConstPtr normals) {
     pcl::visualization::PCLVisualizer::Ptr viewer (new pcl::visualization::PCLVisualizer ("Mesh Viewer"));
     viewer->setBackgroundColor (0, 0, 0);
-    // pcl::visualization::PointCloudColorHandlerRGBField<pcl::PointXYZ> rgb(cloud);
-    // viewer->addPointCloud<pcl::PointXYZ> (cloud, rgb, "Current cloud point");
+    pcl::visualization::PointCloudColorHandlerRGBField<pcl::PointXYZ> rgb(cloud);
+    viewer->addPointCloud<pcl::PointXYZ> (cloud, rgb, "Current cloud point");
     viewer->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 3, "Current cloud point");
-    viewer->addPointCloudNormals<pcl::PointXYZ, pcl::Normal> (cloud, normals, 10, 0.05, "Current normals");
+    viewer->addPointCloudNormals<pcl::PointXYZ, pcl::PointNormal> (cloud, normals, 10, 0.05, "Current normals");
     viewer->addPolygonMesh(*mesh);
     viewer->addCoordinateSystem (1.0);
     viewer->initCameraParameters ();
+    pcl::visualization::Camera camera;
+    viewer->getCameraParameters(camera);
+    camera.pos[2] = -1.5;
+    viewer->setCameraParameters(camera);
+    cout << "Camera: " << std::endl;
+    cout << "\tFocal: "    << camera.focal[0] << ", " << camera.focal[1] << ", " << camera.focal[2] << std::endl;
+    cout << "\tPosition: " << camera.pos[0] << ", " << camera.pos[1] << ", " << camera.pos[2]    << std::endl;
+    cout << "\tView: "     << camera.view[0] << ", " << camera.view[1] << ", " << camera.view[2] << std::endl;
+    cout << "\tClip: "     << camera.clip[0] << ", " << camera.clip[1] << std::endl;
+    cout << "\tFovy: "     << camera.fovy  << std::endl;
     return viewer;
+}
+
+std::vector<std::set<uint32_t>> read_rows(std::istream& f) {
+    std::string line;
+    std::vector<std::set<uint32_t>> rows;
+    while (std::getline(f, line)) {
+        rows.push_back(std::set<uint32_t>());
+        std::string entry;
+        std::istringstream linestrm(line);
+        while (std::getline(linestrm, entry, '\t')) {
+            rows.back().insert(std::stoi(entry));
+        }
+    }
+    return rows;
+}
+
+boost::optional<std::vector<std::set<uint32_t>>> read_primitive_borders(std::string filename) {
+    std::ifstream file(filename);
+    if ( file ) {
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        std::vector<std::set<uint32_t>> rows = read_rows(buffer);
+        file.close();
+        return rows;
+    } 
+    return {};
+}
+
+void invert_normals(pcl::PointCloud<pcl::PointNormal>::Ptr &output_normals, std::vector<std::set<uint32_t>> &primitive_borders,  uint32_t primitive_border_index) {
+    auto current_primitive_borders = primitive_borders[primitive_border_index];
+    uint32_t min =  *std::min_element(current_primitive_borders.begin(), current_primitive_borders.end());
+    uint32_t max =  *std::max_element(current_primitive_borders.begin(), current_primitive_borders.end());
+    for(uint32_t vertex_index = min ; vertex_index <= max ; ++vertex_index) {
+        pcl::PointNormal& point_normal = (*output_normals)[vertex_index];
+        point_normal.normal_x = - point_normal.normal_x;
+        point_normal.normal_y = - point_normal.normal_y;
+        point_normal.normal_z = - point_normal.normal_z;
+    }
+}
+
+boost::optional<uint32_t> get_primitive_border_index(uint32_t point_index, std::vector<std::set<uint32_t>> &primitive_borders) {
+    for (uint32_t primitive_border_index = 0; primitive_border_index < primitive_borders.size(); ++primitive_border_index) {
+        auto current_primitive_borders = primitive_borders[primitive_border_index];
+        // TODO: compute this just once
+        uint32_t min =  *std::min_element(current_primitive_borders.begin(), current_primitive_borders.end());
+        uint32_t max =  *std::max_element(current_primitive_borders.begin(), current_primitive_borders.end());
+        if(min <= point_index && point_index <= max) {
+            return primitive_border_index;
+        }
+    }
+    return {};
+}
+
+
+void detect_bordering_points(
+            pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud, 
+            std::vector<std::set<uint32_t>> &primitive_borders,
+            std::shared_ptr<std::set<BorderingPoints>> bordering_points_ptr) {
+    pcl::KdTreeFLANN<pcl::PointXYZ> kdtree;
+    kdtree.setInputCloud(point_cloud);
+    pcl::PointXYZ searchPoint;
+    int K = 5;
+    std::vector<int> pointIdxNKNSearch(K);
+    std::vector<float> pointNKNSquaredDistance(K);
+    auto& bordering_points = *bordering_points_ptr;
+    for(uint32_t border_index = 0 ; border_index < primitive_borders.size() ; ++border_index) {
+        std::set<uint32_t> borders = primitive_borders[border_index];
+        // for each border get the closest node such that it's not in the border
+        for(uint32_t const& border_point : borders) {
+            pcl::PointXYZ point_in_border = (*point_cloud)[border_point];
+            auto total_found = kdtree.nearestKSearch(point_in_border, K, pointIdxNKNSearch, pointNKNSquaredDistance);
+            if(total_found  > 0) {
+                bool found = false;
+                uint32_t current_neighbour = 0;
+                while(!found && current_neighbour < total_found){
+                    auto current_index = pointIdxNKNSearch[current_neighbour];
+                    auto primitive_of_index_opt = get_primitive_border_index(current_index, primitive_borders);
+                    if(primitive_of_index_opt){
+                        found = *primitive_of_index_opt != border_index;
+                        if(found){
+                            bordering_points.insert(BorderingPoints(border_point, border_index, current_index, *primitive_of_index_opt));
+                        }
+                    }
+                    current_neighbour++;
+                }
+            }
+        }
+    }
+}
+
+
+void make_connected_manifold(pcl::PolygonMesh &polygon_mesh, 
+            pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud, 
+            std::vector<std::set<uint32_t>> &primitive_borders, 
+            pcl::PointXYZ viewpoint,
+            pcl::PointCloud<pcl::PointNormal>::Ptr &output_normals) {
+    std::shared_ptr<std::set<BorderingPoints>> bordering_points_ptr(new std::set<BorderingPoints>);
+    Mesh::VertexIndices vertex_indices;            
+    Mesh mesh;
+    generate_mesh(polygon_mesh, *point_cloud, mesh, vertex_indices);
+    std::set<uint32_t> primiteves_processed;
+    // find point closest to viewpoint center
+    pcl::KdTreeFLANN<pcl::PointXYZ> kdtree;
+    kdtree.setInputCloud(point_cloud);
+    pcl::PointXYZ searchPoint;
+    int K = 5;
+    std::vector<int> pointIdxNKNSearch(K);
+    std::vector<float> pointNKNSquaredDistance(K);
+    if ( kdtree.nearestKSearch(viewpoint, K, pointIdxNKNSearch, pointNKNSquaredDistance) > 0 )
+    {
+        size_t closest_to_viewpoint = pointIdxNKNSearch[0];
+        auto border_index_opt = get_primitive_border_index(closest_to_viewpoint, primitive_borders);
+        if(border_index_opt) {
+            uint32_t border_index = *border_index_opt;
+            cout << "Primitive index of point closest to viewpoint: " << border_index << std::endl;
+            pcl::PointNormal closest_to_viewpoint_pointnormal = (*output_normals)[closest_to_viewpoint];
+            Eigen::Vector3f closest_to_viewpoint_normal_eigen(closest_to_viewpoint_pointnormal.normal_x, closest_to_viewpoint_pointnormal.normal_y, closest_to_viewpoint_pointnormal.normal_z);
+            Eigen::Vector3f closest_to_viewpoint_eigen(closest_to_viewpoint_pointnormal.x, closest_to_viewpoint_pointnormal.y, closest_to_viewpoint_pointnormal.z);
+            Eigen::Vector3f viewpoint_eigen(viewpoint.x, viewpoint.y, viewpoint.z);
+            Eigen::Vector3f  desired_directional_normal = viewpoint_eigen - closest_to_viewpoint_eigen;
+            if (desired_directional_normal.adjoint() * closest_to_viewpoint_normal_eigen < 0.0) {
+                // negative inner product and thus wrong direction, need to invert all normals in primitive
+                invert_normals(output_normals, primitive_borders, border_index);
+            }
+            
+        }
+        
+    }
+
 }
 
 int main (int argc, char** argv)
 {
     auto ply_path_opt = get_ply_path(argc, argv);
-    if(ply_path_opt) {
-        auto ply_path = *ply_path_opt;
+    auto primitive_borders_opt = read_primitive_borders("plane_input_demo.png30000.tsv");
+    if(ply_path_opt && primitive_borders_opt) {
+        std::vector<std::set<uint32_t>> primitive_borders = *primitive_borders_opt;
+        cout << "Number of primitives: " << primitive_borders.size() << std::endl;
+        std::string ply_path = *ply_path_opt;
         pcl::PolygonMesh::Ptr mesh = load_mesh(ply_path);
         pcl::PolygonMesh::Ptr smoothed_mesh = laplacian_smoothing(mesh);
         pcl::io::savePolygonFilePLY("smoothed", *smoothed_mesh);
-        pcl::PointCloud<pcl::Normal>::Ptr output_normals (new pcl::PointCloud<pcl::Normal>);
+        pcl::PointCloud<pcl::PointNormal>::Ptr output_normals (new pcl::PointCloud<pcl::PointNormal>);
         pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud_ptr (new pcl::PointCloud<pcl::PointXYZ>);
-        pcl::fromPCLPointCloud2(smoothed_mesh->cloud, *point_cloud_ptr);        
-        //auto center = compute_center(point_cloud_ptr);
+        std::shared_ptr<std::map<uint32_t, std::vector<Eigen::Vector3f>>> point_index_to_normals_ptr (new std::map<uint32_t, std::vector<Eigen::Vector3f>>);
+        pcl::fromPCLPointCloud2(smoothed_mesh->cloud, *point_cloud_ptr);
         extract_normals(*smoothed_mesh, *point_cloud_ptr, output_normals);
-        //std::shared_ptr<std::map<uint32_t, std::vector<Eigen::Vector3f>>> point_index_to_normals(new std::map<uint32_t, std::vector<Eigen::Vector3f>>);
-        //test(*smoothed_mesh, *point_cloud_ptr, point_index_to_normals);
         cout << "Number of points: "  << point_cloud_ptr->size() << std::endl;
         cout << "Number of normals: " << output_normals->size()  << std::endl;
+        pcl::PointXYZ viewpoint(0, 0, -1.5);
+        make_connected_manifold(*smoothed_mesh, point_cloud_ptr, primitive_borders, viewpoint, output_normals);
+        //pcl::Poisson<pcl::PointNormal> poisson;
+        //poisson.setDepth(12);
+        //poisson.setInputCloud(output_normals);
+        //poisson.reconstruct(*smoothed_mesh);
+
         auto viewer = visualize(smoothed_mesh, point_cloud_ptr, output_normals);
         while (!viewer->wasStopped ()){
             viewer->spinOnce (100);
             boost::this_thread::sleep (boost::posix_time::microseconds (100000));
         }
+
         //pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud (new pcl::PointCloud<pcl::PointXYZ> ());
         //pcl::fromPCLPointCloud2(mesh->cloud, *point_cloud);
         //pcl::search::KdTree<pcl::PointXYZ>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZ>);
         //pcl::PointCloud<pcl::PointNormal> mls_points;
         //PointCloud<PointNormal>::Ptr cloud_smoothed_normals(new PointCloud<PointNormal>());
+
         //pcl::Poisson<pcl::PointNormal> poisson;
         //poisson.setDepth(9);
         //poisson.setInputCloud(cloud_smoothed_normals);
         //PolygonMesh poisson_mesh;
         //poisson.reconstruct(poisson_mesh);
     
-        //pcl::MovingLeastSquares<pcl::PointXYZ, pcl::PointNormal> mls;
-        //mls.setComputeNormals (true);
-        //mls.setInputCloud (point_cloud);
-        //mls.setPolynomialOrder (2);
-        //mls.setSearchMethod (tree);
-        //mls.setSearchRadius (0.03);
-        //mls.process (mls_points);
         //pcl::io::savePolygonFilePLY ("result-mls.PLY", mls_points);
         return 0;
     } else {
