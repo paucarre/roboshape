@@ -44,16 +44,15 @@
 #include <numeric>  
 #include <iostream>
 
-struct BorderingPoints {
+struct BorderingPoint {
   uint32_t source_point;
   uint32_t source_primitive;
   uint32_t destination_point;
   uint32_t destination_primitive;
-  BorderingPoints(uint32_t _source_point, uint32_t _source_primitive,  uint32_t _destination_point, uint32_t _destination_primitive) : 
+  BorderingPoint(uint32_t _source_point, uint32_t _source_primitive,  uint32_t _destination_point, uint32_t _destination_primitive) : 
     source_point(_source_point), source_primitive(_source_primitive), destination_point(_destination_point), destination_primitive(_destination_primitive) {}
+
 } ;
-
-
 
 
 boost::optional<std::string> get_ply_path(int argc, char** argv) {
@@ -156,7 +155,7 @@ void extract_point_index_to_normals(pcl::PolygonMesh &polygon_mesh, pcl::PointCl
 }
 
 void extract_normals(pcl::PolygonMesh &mesh, pcl::PointCloud<pcl::PointXYZ> &point_cloud, 
-        pcl::PointCloud<pcl::PointNormal>::Ptr &output_normals)  {
+        pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &output_normals)  {
     cout << "Starting normal extraction..." << std::endl; 
     std::shared_ptr<std::map<uint32_t, std::vector<Eigen::Vector3f>>> point_index_to_normals (new std::map<uint32_t, std::vector<Eigen::Vector3f>>);
     extract_point_index_to_normals(mesh, point_cloud, point_index_to_normals);
@@ -168,7 +167,10 @@ void extract_normals(pcl::PolygonMesh &mesh, pcl::PointCloud<pcl::PointXYZ> &poi
                 sum_of_normals = sum_of_normals + normal;
             }
             sum_of_normals.normalize();
-            pcl::PointNormal point_normal = pcl::PointNormal();
+            pcl::PointXYZRGBNormal point_normal = pcl::PointXYZRGBNormal();
+            uint8_t r = 255, g = 0, b = 0;
+            uint32_t rgb = ((uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b);
+            point_normal.rgb = *reinterpret_cast<float*>(&rgb);
             point_normal.normal_x = sum_of_normals[0];
             point_normal.normal_y = sum_of_normals[1];
             point_normal.normal_z = sum_of_normals[2];
@@ -184,13 +186,14 @@ void extract_normals(pcl::PolygonMesh &mesh, pcl::PointCloud<pcl::PointXYZ> &poi
 
 pcl::visualization::PCLVisualizer::Ptr visualize(pcl::PolygonMesh::Ptr mesh,
         pcl::PointCloud<pcl::PointXYZ>::ConstPtr cloud, 
-        pcl::PointCloud<pcl::PointNormal>::ConstPtr normals) {
+        pcl::PointCloud<pcl::PointXYZRGBNormal>::ConstPtr normals) {
+    pcl::toPCLPointCloud2(*normals, mesh->cloud);
     pcl::visualization::PCLVisualizer::Ptr viewer (new pcl::visualization::PCLVisualizer ("Mesh Viewer"));
     viewer->setBackgroundColor (0, 0, 0);
-    pcl::visualization::PointCloudColorHandlerRGBField<pcl::PointXYZ> rgb(cloud);
-    viewer->addPointCloud<pcl::PointXYZ> (cloud, rgb, "Current cloud point");
-    viewer->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 3, "Current cloud point");
-    viewer->addPointCloudNormals<pcl::PointXYZ, pcl::PointNormal> (cloud, normals, 10, 0.05, "Current normals");
+    pcl::visualization::PointCloudColorHandlerRGBField<pcl::PointXYZRGBNormal> rgb(normals);
+    viewer->addPointCloud<pcl::PointXYZRGBNormal> (normals, rgb, "Current cloud point");
+    viewer->setPointCloudRenderingProperties (pcl::visualization::PCL_VISUALIZER_REPRESENTATION_WIREFRAME, 3, "Current cloud point");
+    viewer->addPointCloudNormals<pcl::PointXYZRGBNormal, pcl::PointXYZRGBNormal> (normals, normals, 10, 0.05, "Current normals");
     viewer->addPolygonMesh(*mesh);
     viewer->addCoordinateSystem (1.0);
     viewer->initCameraParameters ();
@@ -233,12 +236,14 @@ boost::optional<std::vector<std::set<uint32_t>>> read_primitive_borders(std::str
     return {};
 }
 
-void invert_normals(pcl::PointCloud<pcl::PointNormal>::Ptr &output_normals, std::vector<std::set<uint32_t>> &primitive_borders,  uint32_t primitive_border_index) {
+void invert_normals(pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &output_normals, 
+     std::vector<std::set<uint32_t>> &primitive_borders,  uint32_t primitive_border_index) {
     auto current_primitive_borders = primitive_borders[primitive_border_index];
+    // TODO: compute this just once
     uint32_t min =  *std::min_element(current_primitive_borders.begin(), current_primitive_borders.end());
     uint32_t max =  *std::max_element(current_primitive_borders.begin(), current_primitive_borders.end());
     for(uint32_t vertex_index = min ; vertex_index <= max ; ++vertex_index) {
-        pcl::PointNormal& point_normal = (*output_normals)[vertex_index];
+        pcl::PointXYZRGBNormal& point_normal = (*output_normals)[vertex_index];
         point_normal.normal_x = - point_normal.normal_x;
         point_normal.normal_y = - point_normal.normal_y;
         point_normal.normal_z = - point_normal.normal_z;
@@ -258,18 +263,16 @@ boost::optional<uint32_t> get_primitive_border_index(uint32_t point_index, std::
     return {};
 }
 
-
 void detect_bordering_points(
             pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud, 
             std::vector<std::set<uint32_t>> &primitive_borders,
-            std::shared_ptr<std::set<BorderingPoints>> bordering_points_ptr) {
+            std::map<uint32_t, std::vector<BorderingPoint>> &bordering_points) {
     pcl::KdTreeFLANN<pcl::PointXYZ> kdtree;
     kdtree.setInputCloud(point_cloud);
     pcl::PointXYZ searchPoint;
     int K = 5;
     std::vector<int> pointIdxNKNSearch(K);
     std::vector<float> pointNKNSquaredDistance(K);
-    auto& bordering_points = *bordering_points_ptr;
     for(uint32_t border_index = 0 ; border_index < primitive_borders.size() ; ++border_index) {
         std::set<uint32_t> borders = primitive_borders[border_index];
         // for each border get the closest node such that it's not in the border
@@ -278,38 +281,31 @@ void detect_bordering_points(
             auto total_found = kdtree.nearestKSearch(point_in_border, K, pointIdxNKNSearch, pointNKNSquaredDistance);
             if(total_found  > 0) {
                 bool found = false;
-                uint32_t current_neighbour = 0;
-                while(!found && current_neighbour < total_found){
+                for(uint32_t current_neighbour = 0 ; !found && current_neighbour < total_found ; current_neighbour++) {                
                     auto current_index = pointIdxNKNSearch[current_neighbour];
-                    auto primitive_of_index_opt = get_primitive_border_index(current_index, primitive_borders);
-                    if(primitive_of_index_opt){
+                    auto primitive_of_index_opt = get_primitive_border_index(current_index, primitive_borders);                    
+                    if(primitive_of_index_opt){                        
                         found = *primitive_of_index_opt != border_index;
                         if(found){
-                            bordering_points.insert(BorderingPoints(border_point, border_index, current_index, *primitive_of_index_opt));
+                            auto current_bordering_point = BorderingPoint(border_point, border_index, current_index, *primitive_of_index_opt);
+                            if(bordering_points.find(border_index) == bordering_points.end()){
+                                bordering_points[border_index] = std::vector<BorderingPoint>();
+                            }
+                            bordering_points[border_index].push_back(current_bordering_point);
                         }
                     }
-                    current_neighbour++;
                 }
             }
         }
     }
 }
 
-
-void make_connected_manifold(pcl::PolygonMesh &polygon_mesh, 
-            pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud, 
-            std::vector<std::set<uint32_t>> &primitive_borders, 
-            pcl::PointXYZ viewpoint,
-            pcl::PointCloud<pcl::PointNormal>::Ptr &output_normals) {
-    std::shared_ptr<std::set<BorderingPoints>> bordering_points_ptr(new std::set<BorderingPoints>);
-    Mesh::VertexIndices vertex_indices;            
-    Mesh mesh;
-    generate_mesh(polygon_mesh, *point_cloud, mesh, vertex_indices);
-    std::set<uint32_t> primiteves_processed;
-    // find point closest to viewpoint center
+boost::optional<uint32_t> viewpoint_normal_consistency(pcl::PointXYZ viewpoint,
+        pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
+        std::vector<std::set<uint32_t>> &primitive_borders,
+        pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &output_normals) {
     pcl::KdTreeFLANN<pcl::PointXYZ> kdtree;
     kdtree.setInputCloud(point_cloud);
-    pcl::PointXYZ searchPoint;
     int K = 5;
     std::vector<int> pointIdxNKNSearch(K);
     std::vector<float> pointNKNSquaredDistance(K);
@@ -320,7 +316,7 @@ void make_connected_manifold(pcl::PolygonMesh &polygon_mesh,
         if(border_index_opt) {
             uint32_t border_index = *border_index_opt;
             cout << "Primitive index of point closest to viewpoint: " << border_index << std::endl;
-            pcl::PointNormal closest_to_viewpoint_pointnormal = (*output_normals)[closest_to_viewpoint];
+            pcl::PointXYZRGBNormal closest_to_viewpoint_pointnormal = (*output_normals)[closest_to_viewpoint];
             Eigen::Vector3f closest_to_viewpoint_normal_eigen(closest_to_viewpoint_pointnormal.normal_x, closest_to_viewpoint_pointnormal.normal_y, closest_to_viewpoint_pointnormal.normal_z);
             Eigen::Vector3f closest_to_viewpoint_eigen(closest_to_viewpoint_pointnormal.x, closest_to_viewpoint_pointnormal.y, closest_to_viewpoint_pointnormal.z);
             Eigen::Vector3f viewpoint_eigen(viewpoint.x, viewpoint.y, viewpoint.z);
@@ -328,12 +324,57 @@ void make_connected_manifold(pcl::PolygonMesh &polygon_mesh,
             if (desired_directional_normal.adjoint() * closest_to_viewpoint_normal_eigen < 0.0) {
                 // negative inner product and thus wrong direction, need to invert all normals in primitive
                 invert_normals(output_normals, primitive_borders, border_index);
+            }            
+        }
+        return border_index_opt;
+    }
+    return {};
+}
+
+void make_smooth_manifold(pcl::PolygonMesh &polygon_mesh, 
+            pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud, 
+            std::vector<std::set<uint32_t>> &primitive_borders, 
+            pcl::PointXYZ viewpoint,
+            pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &output_normals) {
+    std::map<uint32_t, std::vector<BorderingPoint>> bordering_points;
+    detect_bordering_points(point_cloud, primitive_borders, bordering_points);
+    cout << "Bordering points: " << bordering_points.size() << std::endl;
+    Mesh::VertexIndices vertex_indices;            
+    Mesh mesh;
+    generate_mesh(polygon_mesh, *point_cloud, mesh, vertex_indices);
+    std::set<uint32_t> primiteves_processed;
+    std::stack<uint32_t> primitives_to_process;
+    boost::optional<uint32_t> border_index_opt = viewpoint_normal_consistency(viewpoint,
+        point_cloud, primitive_borders, output_normals);
+    if(border_index_opt) {
+        uint32_t border_index = *border_index_opt;
+        primitives_to_process.push(border_index);
+        while(!primitives_to_process.empty()) {
+            auto current_border_index = primitives_to_process.top();
+            cout << "Processing primitive: " << current_border_index << std::endl;
+            primiteves_processed.insert(current_border_index);
+            primitives_to_process.pop();
+            auto bordering_points_interator = bordering_points.find(current_border_index);
+            if(bordering_points_interator != bordering_points.end()) {
+                std::vector<BorderingPoint> bordering_points = (*bordering_points_interator).second;
+                cout << "Total number of borders: " <<  bordering_points.size() << std::endl;
+                for(BorderingPoint bordering_point : bordering_points) {
+                    if(primiteves_processed.find(bordering_point.destination_primitive) == primiteves_processed.end()){
+                        // get normal from source primitive
+                        auto source_normal = (*output_normals)[bordering_point.source_point];
+                        auto destination_normal = (*output_normals)[bordering_point.destination_point];
+                        Eigen::Vector3f source_normal_eig(source_normal.normal_x, source_normal.normal_y, source_normal.normal_z);
+                        Eigen::Vector3f destination_normal_eig(destination_normal.normal_x, destination_normal.normal_y, destination_normal.normal_z);
+                        if(source_normal_eig.adjoint() * destination_normal_eig < 0.0) {
+                            invert_normals(output_normals, primitive_borders, bordering_point.destination_primitive);
+                        }
+                        primitives_to_process.push(bordering_point.destination_primitive);
+                    }
+                }
             }
             
         }
-        
     }
-
 }
 
 int main (int argc, char** argv)
@@ -344,10 +385,10 @@ int main (int argc, char** argv)
         std::vector<std::set<uint32_t>> primitive_borders = *primitive_borders_opt;
         cout << "Number of primitives: " << primitive_borders.size() << std::endl;
         std::string ply_path = *ply_path_opt;
-        pcl::PolygonMesh::Ptr mesh = load_mesh(ply_path);
-        pcl::PolygonMesh::Ptr smoothed_mesh = laplacian_smoothing(mesh);
-        pcl::io::savePolygonFilePLY("smoothed", *smoothed_mesh);
-        pcl::PointCloud<pcl::PointNormal>::Ptr output_normals (new pcl::PointCloud<pcl::PointNormal>);
+        pcl::PolygonMesh::Ptr smoothed_mesh = load_mesh(ply_path);
+        //pcl::PolygonMesh::Ptr smoothed_mesh = laplacian_smoothing(mesh);
+        //pcl::io::savePolygonFilePLY("smoothed", *smoothed_mesh);
+        pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr output_normals (new pcl::PointCloud<pcl::PointXYZRGBNormal>);
         pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud_ptr (new pcl::PointCloud<pcl::PointXYZ>);
         std::shared_ptr<std::map<uint32_t, std::vector<Eigen::Vector3f>>> point_index_to_normals_ptr (new std::map<uint32_t, std::vector<Eigen::Vector3f>>);
         pcl::fromPCLPointCloud2(smoothed_mesh->cloud, *point_cloud_ptr);
@@ -355,8 +396,9 @@ int main (int argc, char** argv)
         cout << "Number of points: "  << point_cloud_ptr->size() << std::endl;
         cout << "Number of normals: " << output_normals->size()  << std::endl;
         pcl::PointXYZ viewpoint(0, 0, -1.5);
-        make_connected_manifold(*smoothed_mesh, point_cloud_ptr, primitive_borders, viewpoint, output_normals);
-        //pcl::Poisson<pcl::PointNormal> poisson;
+        make_smooth_manifold(*smoothed_mesh, point_cloud_ptr, primitive_borders, viewpoint, output_normals);
+        
+        //pcl::Poisson<pcl::PointXYZRGBNormal> poisson;
         //poisson.setDepth(12);
         //poisson.setInputCloud(output_normals);
         //poisson.reconstruct(*smoothed_mesh);
@@ -367,19 +409,6 @@ int main (int argc, char** argv)
             boost::this_thread::sleep (boost::posix_time::microseconds (100000));
         }
 
-        //pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud (new pcl::PointCloud<pcl::PointXYZ> ());
-        //pcl::fromPCLPointCloud2(mesh->cloud, *point_cloud);
-        //pcl::search::KdTree<pcl::PointXYZ>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZ>);
-        //pcl::PointCloud<pcl::PointNormal> mls_points;
-        //PointCloud<PointNormal>::Ptr cloud_smoothed_normals(new PointCloud<PointNormal>());
-
-        //pcl::Poisson<pcl::PointNormal> poisson;
-        //poisson.setDepth(9);
-        //poisson.setInputCloud(cloud_smoothed_normals);
-        //PolygonMesh poisson_mesh;
-        //poisson.reconstruct(poisson_mesh);
-    
-        //pcl::io::savePolygonFilePLY ("result-mls.PLY", mls_points);
         return 0;
     } else {
         return 1;
