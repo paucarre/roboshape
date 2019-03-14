@@ -39,7 +39,7 @@
 #include <boost/program_options/variables_map.hpp>
 #include <boost/program_options/version.hpp>
 #include <boost/thread/thread.hpp>
-
+#include <boost/optional/optional_io.hpp>
 
 #include <numeric>  
 #include <iostream>
@@ -62,11 +62,48 @@ struct Primitive {
     uint32_t first;
     uint32_t last;
     uint32_t nodes;
+    int grain;
 
     Primitive(std::set<uint32_t> _borders): borders(_borders) {
         this->first =  *std::min_element(this->borders.begin(), this->borders.end());
         this->last  =  *std::max_element(this->borders.begin(), this->borders.end());
         this->nodes = this->last - this->first + 1;
+        this->grain = (int)round(sqrt((float)nodes));        
+        cout << "Grain: " << this->grain << std::endl;
+    }
+
+    boost::optional<uint32_t> index_up(uint32_t point_index) {
+        uint32_t up_proposal = point_index - grain;
+        if(this->belongs(up_proposal)){
+            return up_proposal;
+        } else {
+            return {};
+        }
+    }
+
+    boost::optional<uint32_t> index_down(uint32_t point_index) {
+        uint32_t down_proposal = point_index + grain;
+        if(this->belongs(down_proposal)){
+            return down_proposal;
+        } else {
+            return {};
+        }
+    }
+
+    boost::optional<uint32_t> index_right(uint32_t point_index) {
+        if(point_index + 1 % this->grain == 0) {
+            return {}; // right edge
+        } else {
+            return point_index + 1;
+        }
+    }
+
+    boost::optional<uint32_t> index_left(uint32_t point_index) {
+        if(point_index % this->grain == 0) {
+            return {}; // left edge
+        } else {
+            return point_index - 1;
+        }
     }
 
     bool belongs(uint32_t point_index) {
@@ -184,7 +221,7 @@ void extract_point_index_to_neighbours(pcl::PolygonMesh &polygon_mesh, pcl::Poin
         auto outgoing_half_edges_end = outgoing_half_edges;
         do {
             Mesh::HalfEdgeIndex target_edge = outgoing_half_edges.getTargetIndex();
-            auto neighbour_point_index = mesh.getOriginatingVertexIndex(target_edge).get();
+            auto neighbour_point_index = mesh.getTerminatingVertexIndex(target_edge).get();
             auto vertices_iterator = point_index_to_neighbours->find(point_index);
             if (vertices_iterator == point_index_to_neighbours->end()) {
                 (*point_index_to_neighbours)[point_index] = { neighbour_point_index };
@@ -225,16 +262,66 @@ void extract_normals(pcl::PolygonMesh &mesh, pcl::PointCloud<pcl::PointXYZ> &poi
     cout << "... end of normal extraction." << std::endl;     
 }
 
-void non_border_curvature(std::vector<int> indices, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &normals) {
+float non_border_curvature(Primitive primitive, int point_index, std::vector<int> neighbour_indices, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &normals_ptr) {
     /**
-     * If it has 6 neighbours the orthogonal basis of the tangent space is the cross on X-Y ignoring the two diagonal connections
+     * If it has 6 neighbours the orthogonal basis of the tangent space is the cross on U-V ignoring the two diagonal connections
      * 
      *    *   O   
      *      \ |  
      *    O---P---O
      *        | \
      *        O   *
-     */ 
+     */
+    pcl::PointCloud<pcl::PointXYZRGBNormal> &normals = *normals_ptr;    
+    // normal-points
+    pcl::PointXYZRGBNormal center  = normals[*primitive.index_down(point_index)];
+    pcl::PointXYZRGBNormal down  = normals[*primitive.index_down(point_index)];
+    pcl::PointXYZRGBNormal up    = normals[*primitive.index_up(point_index)];
+    pcl::PointXYZRGBNormal left  = normals[*primitive.index_left(point_index)];
+    pcl::PointXYZRGBNormal right = normals[*primitive.index_right(point_index)];
+    // points
+    Eigen::Vector3f center_point(center.x, center.y, center.z);
+    Eigen::Vector3f down_point(down.x, down.y, down.z);
+    Eigen::Vector3f up_point(up.x, up.y, up.z);
+    Eigen::Vector3f left_point(left.x, left.y, left.z);
+    Eigen::Vector3f right_point(right.x, right.y, right.z);
+    //normals
+    Eigen::Vector3f center_normal(center.normal_x, center.normal_y, center.normal_z);
+    Eigen::Vector3f down_normal(down.normal_x, down.normal_y, down.normal_z);
+    Eigen::Vector3f up_normal(up.normal_x, up.normal_y, up.normal_z);
+    Eigen::Vector3f left_normal(left.normal_x, left.normal_y, left.normal_z);
+    Eigen::Vector3f right_normal(right.normal_x, right.normal_y, right.normal_z);
+    
+    std::vector<float> curvatures;
+    // radius on U
+    auto center_left_norm =  (center_point - left_point ).norm();
+    if(center_left_norm > 1e-3) {
+        auto radius_left_center  =  (center_normal - left_normal  ).norm() / center_left_norm;
+        curvatures.push_back(radius_left_center);
+    }
+    auto center_right_norm =  (center_point - right_point).norm();
+    if(center_right_norm > 1e-3) {
+        auto radius_right_center =  (right_normal  - center_normal).norm() / center_right_norm;
+        curvatures.push_back(radius_right_center);
+    }
+    std::vector<float> curvatures_v;
+    // radius on V
+    auto center_up_norm = (center_point - up_point ).norm();
+    if(center_up_norm > 1e-3) {
+        auto radius_up_center  =  (center_normal - up_normal  ).norm() / center_up_norm;
+        curvatures.push_back(radius_up_center);
+    }
+    auto center_down_norm = (center_point - down_point).norm();
+    if(center_down_norm > 1e-3) {
+        auto radius_down_center =  (down_normal  - center_normal).norm() / center_down_norm;
+        curvatures.push_back(radius_down_center);
+    }
+    float sum_curvatures = 0.0;
+    for(auto curvature : curvatures) {
+        sum_curvatures = sum_curvatures + curvature;
+    }
+    auto mean_curvature = sum_curvatures / (float)curvatures.size();
+    return mean_curvature;
 
 }
 
@@ -292,29 +379,31 @@ void non_cornering_borders(std::vector<int> indices, pcl::PointCloud<pcl::PointX
 
 }
 
-
-
-
-
-
-
-void extract_curvature(pcl::PolygonMesh &mesh, pcl::PointCloud<pcl::PointXYZ> &point_cloud, 
+void extract_curvature(std::vector<Primitive> &primitives, 
+        pcl::PolygonMesh &mesh, pcl::PointCloud<pcl::PointXYZ> &point_cloud, 
         pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &normals)  {
     std::shared_ptr<std::map<uint32_t, std::vector<int>>> point_index_to_neighbours (new std::map<uint32_t, std::vector<int>>);
     cout << "Starting curvature extraction..." << std::endl; 
     extract_point_index_to_neighbours(mesh, point_cloud, point_index_to_neighbours);
-    for(uint32_t point_index = 0 ; point_index < mesh.cloud.data.size() ; ++point_index) {
-        auto neighbours = point_index_to_neighbours->find(point_index);
-        if(neighbours != point_index_to_neighbours->end()) {
-            auto point_and_neighbours = *neighbours;
-            /**
-            * Just because of the way primitives are created,
-            * the basis for the tangent space is closest to 
-            * orthogonal for the closest index and the index furthest
-            * (placing them into a grid, next point in same row and previous row)
-            **/
-            if(point_and_neighbours.second.size() == 6) {
-                non_border_curvature(point_and_neighbours.second, normals);
+    
+    for(auto primitive : primitives) {
+        for(uint32_t point_index = primitive.first ; point_index <= primitive.last ; ++point_index) {
+            auto neighbours = point_index_to_neighbours->find(point_index);
+            if(neighbours != point_index_to_neighbours->end()) {
+                auto point_and_neighbours = *neighbours;
+                if(point_and_neighbours.second.size() == 6) {
+                    float curvature = non_border_curvature(primitive, point_and_neighbours.first, point_and_neighbours.second, normals);
+                    cout << curvature << std::endl;
+                    curvature = curvature / 5;
+                    curvature = curvature * curvature;
+                    int normalized_curvature =(int) curvature;
+                    if(normalized_curvature > 255){
+                        normalized_curvature = 255;
+                    }
+                    uint8_t r = 0, g = normalized_curvature, b = 255 - normalized_curvature;
+                    uint32_t rgb = ((uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b);
+                    (*normals)[point_and_neighbours.first].rgb = *reinterpret_cast<float*>(&rgb);
+                }
             }
         }
     }
@@ -525,7 +614,7 @@ int main (int argc, char** argv)
         std::shared_ptr<std::map<uint32_t, std::vector<Eigen::Vector3f>>> point_index_to_normals_ptr (new std::map<uint32_t, std::vector<Eigen::Vector3f>>);
         pcl::fromPCLPointCloud2(smoothed_mesh->cloud, *point_cloud_ptr);
         extract_normals(*smoothed_mesh, *point_cloud_ptr, output_normals);
-        extract_curvature(*smoothed_mesh, *point_cloud_ptr, output_normals);
+        extract_curvature(primitive_borders, *smoothed_mesh, *point_cloud_ptr, output_normals);
 
         pcl::toPCLPointCloud2(*output_normals, smoothed_mesh->cloud);
         cout << "Number of points: "  << point_cloud_ptr->size() << std::endl;
