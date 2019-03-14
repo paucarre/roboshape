@@ -154,6 +154,27 @@ void extract_point_index_to_normals(pcl::PolygonMesh &polygon_mesh, pcl::PointCl
     }
 }
 
+void extract_point_index_to_neighbours(pcl::PolygonMesh &polygon_mesh, pcl::PointCloud<pcl::PointXYZ> &point_cloud,    
+        std::shared_ptr<std::map<uint32_t, std::vector<int>>> point_index_to_neighbours) {
+    Mesh::VertexIndices vertex_indices;            
+    Mesh mesh;
+    generate_mesh(polygon_mesh, point_cloud, mesh, vertex_indices);
+    for(uint32_t point_index = 0 ; point_index < vertex_indices.size() ; ++point_index) {
+        auto outgoing_half_edges = mesh.getOutgoingHalfEdgeAroundVertexCirculator(vertex_indices[point_index]);
+        auto outgoing_half_edges_end = outgoing_half_edges;
+        do {
+            Mesh::HalfEdgeIndex target_edge = outgoing_half_edges.getTargetIndex();
+            auto neighbour_point_index = mesh.getOriginatingVertexIndex(target_edge).get();
+            auto vertices_iterator = point_index_to_neighbours->find(point_index);
+            if (vertices_iterator == point_index_to_neighbours->end()) {
+                (*point_index_to_neighbours)[point_index] = { neighbour_point_index };
+            } else {
+                vertices_iterator->second.push_back(neighbour_point_index);
+            }
+        } while (++outgoing_half_edges != outgoing_half_edges_end);
+    }
+}
+
 void extract_normals(pcl::PolygonMesh &mesh, pcl::PointCloud<pcl::PointXYZ> &point_cloud, 
         pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &output_normals)  {
     cout << "Starting normal extraction..." << std::endl; 
@@ -184,10 +205,106 @@ void extract_normals(pcl::PolygonMesh &mesh, pcl::PointCloud<pcl::PointXYZ> &poi
     cout << "... end of normal extraction." << std::endl;     
 }
 
+void non_border_curvature(std::vector<int> indices, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &normals) {
+    /**
+     * If it has 6 neighbours the orthogonal basis of the tangent space is the cross on X-Y ignoring the two diagonal connections
+     * 
+     *    *   O   
+     *      \ |  
+     *    O---P---O
+     *        | \
+     *        O   *
+     */ 
+
+}
+
+void upper_left_and_bottom_right_corners(std::vector<int> indices, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &normals) {
+    /**
+     * If it has 3 neighbours the orthogonal basis consists of all the connections skipping the diagonal ones
+     * 
+     *     P---O
+     *     | \
+     *     O  * 
+     *  
+     *                  *   O  
+     *                    \ |
+     *                  O---P
+     * 
+     */ 
+
+}
+
+void bottom_left_and_upper_right_corners(std::vector<int> indices, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &normals) {
+    /**
+     * If it has 2 neighbours the orthogonal basis consists of all the connections 
+     * 
+     *                  O---P
+     *                      |
+     *                      O 
+     *  
+     *     O    
+     *     | 
+     *     P---O
+     * 
+     */ 
+
+}
+
+
+void non_cornering_borders(std::vector<int> indices, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &normals) {
+    /**
+     * If it has 4 neighbours the orthogonal basis consists of all the connections skipping the diagonal ones
+     * 
+     *                 O---P---O 
+     *                     | \
+     *                     O   *
+     *  
+     *     O                           *   O
+     *     |                             \ |
+     *     P---O                       O---P
+     *     | \                             | 
+     *     O   *                           O
+     * 
+     *                *   O   
+     *                  \ | 
+     *                O---P---O 
+     */ 
+
+}
+
+
+
+
+
+
+
+void extract_curvature(pcl::PolygonMesh &mesh, pcl::PointCloud<pcl::PointXYZ> &point_cloud, 
+        pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &normals)  {
+    std::shared_ptr<std::map<uint32_t, std::vector<int>>> point_index_to_neighbours (new std::map<uint32_t, std::vector<int>>);
+    cout << "Starting curvature extraction..." << std::endl; 
+    extract_point_index_to_neighbours(mesh, point_cloud, point_index_to_neighbours);
+    for(uint32_t point_index = 0 ; point_index < mesh.cloud.data.size() ; ++point_index) {
+        auto neighbours = point_index_to_neighbours->find(point_index);
+        if(neighbours != point_index_to_neighbours->end()) {
+            auto point_and_neighbours = *neighbours;
+            /**
+            * Just because of the way primitives are created,
+            * the basis for the tangent space is closest to 
+            * orthogonal for the closest index and the index furthest
+            * (placing them into a grid, next point in same row and previous row)
+            **/
+            if(point_and_neighbours.second.size() == 6) {
+                non_border_curvature(point_and_neighbours.second, normals);
+            }
+        }
+    }
+    cout << "... end of curvature extraction." << std::endl;     
+}
+
+
 pcl::visualization::PCLVisualizer::Ptr visualize(pcl::PolygonMesh::Ptr mesh,
-        pcl::PointCloud<pcl::PointXYZ>::ConstPtr cloud, 
         pcl::PointCloud<pcl::PointXYZRGBNormal>::ConstPtr normals) {
-    pcl::toPCLPointCloud2(*normals, mesh->cloud);
+
     pcl::visualization::PCLVisualizer::Ptr viewer (new pcl::visualization::PCLVisualizer ("Mesh Viewer"));
     viewer->setBackgroundColor (0, 0, 0);
     pcl::visualization::PointCloudColorHandlerRGBField<pcl::PointXYZRGBNormal> rgb(normals);
@@ -351,13 +468,13 @@ void make_smooth_manifold(pcl::PolygonMesh &polygon_mesh,
         primitives_to_process.push(border_index);
         while(!primitives_to_process.empty()) {
             auto current_border_index = primitives_to_process.top();
-            cout << "Processing primitive: " << current_border_index << std::endl;
+            //cout << "Processing primitive: " << current_border_index << std::endl;
             primiteves_processed.insert(current_border_index);
             primitives_to_process.pop();
             auto bordering_points_interator = bordering_points.find(current_border_index);
             if(bordering_points_interator != bordering_points.end()) {
                 std::vector<BorderingPoint> bordering_points = (*bordering_points_interator).second;
-                cout << "Total number of borders: " <<  bordering_points.size() << std::endl;
+                //cout << "Total number of borders: " <<  bordering_points.size() << std::endl;
                 for(BorderingPoint bordering_point : bordering_points) {
                     if(primiteves_processed.find(bordering_point.destination_primitive) == primiteves_processed.end()){
                         // get normal from source primitive
@@ -393,6 +510,9 @@ int main (int argc, char** argv)
         std::shared_ptr<std::map<uint32_t, std::vector<Eigen::Vector3f>>> point_index_to_normals_ptr (new std::map<uint32_t, std::vector<Eigen::Vector3f>>);
         pcl::fromPCLPointCloud2(smoothed_mesh->cloud, *point_cloud_ptr);
         extract_normals(*smoothed_mesh, *point_cloud_ptr, output_normals);
+        extract_curvature(*smoothed_mesh, *point_cloud_ptr, output_normals);
+
+        pcl::toPCLPointCloud2(*output_normals, smoothed_mesh->cloud);
         cout << "Number of points: "  << point_cloud_ptr->size() << std::endl;
         cout << "Number of normals: " << output_normals->size()  << std::endl;
         pcl::PointXYZ viewpoint(0, 0, -1.5);
@@ -403,11 +523,11 @@ int main (int argc, char** argv)
         //poisson.setInputCloud(output_normals);
         //poisson.reconstruct(*smoothed_mesh);
 
-        auto viewer = visualize(smoothed_mesh, point_cloud_ptr, output_normals);
-        while (!viewer->wasStopped ()){
-            viewer->spinOnce (100);
-            boost::this_thread::sleep (boost::posix_time::microseconds (100000));
-        }
+        //auto viewer = visualize(smoothed_mesh, output_normals);
+        //while (!viewer->wasStopped ()){
+        //    viewer->spinOnce (100);
+        //    boost::this_thread::sleep (boost::posix_time::microseconds (100000));
+       // }
 
         return 0;
     } else {
