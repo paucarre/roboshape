@@ -45,15 +45,35 @@
 #include <iostream>
 
 struct BorderingPoint {
+  
   uint32_t source_point;
   uint32_t source_primitive;
   uint32_t destination_point;
   uint32_t destination_primitive;
+
   BorderingPoint(uint32_t _source_point, uint32_t _source_primitive,  uint32_t _destination_point, uint32_t _destination_primitive) : 
     source_point(_source_point), source_primitive(_source_primitive), destination_point(_destination_point), destination_primitive(_destination_primitive) {}
 
 } ;
 
+struct Primitive {
+
+    std::set<uint32_t> borders;    
+    uint32_t first;
+    uint32_t last;
+    uint32_t nodes;
+
+    Primitive(std::set<uint32_t> _borders): borders(_borders) {
+        this->first =  *std::min_element(this->borders.begin(), this->borders.end());
+        this->last  =  *std::max_element(this->borders.begin(), this->borders.end());
+        this->nodes = this->last - this->first + 1;
+    }
+
+    bool belongs(uint32_t point_index) {
+        return this->first <= point_index && point_index <= this->last;
+    }
+
+};
 
 boost::optional<std::string> get_ply_path(int argc, char** argv) {
     const char* HELP = "help";
@@ -327,26 +347,27 @@ pcl::visualization::PCLVisualizer::Ptr visualize(pcl::PolygonMesh::Ptr mesh,
     return viewer;
 }
 
-std::vector<std::set<uint32_t>> read_rows(std::istream& f) {
+std::vector<Primitive> read_rows(std::istream& f) {
     std::string line;
-    std::vector<std::set<uint32_t>> rows;
+    std::vector<Primitive> rows;
     while (std::getline(f, line)) {
-        rows.push_back(std::set<uint32_t>());
         std::string entry;
         std::istringstream linestrm(line);
+        auto borders = std::set<uint32_t>();
         while (std::getline(linestrm, entry, '\t')) {
-            rows.back().insert(std::stoi(entry));
+            borders.insert(std::stoi(entry));
         }
+        rows.push_back(Primitive(borders));
     }
     return rows;
 }
 
-boost::optional<std::vector<std::set<uint32_t>>> read_primitive_borders(std::string filename) {
+boost::optional<std::vector<Primitive>> read_primitive_borders(std::string filename) {
     std::ifstream file(filename);
     if ( file ) {
         std::stringstream buffer;
         buffer << file.rdbuf();
-        std::vector<std::set<uint32_t>> rows = read_rows(buffer);
+        std::vector<Primitive> rows = read_rows(buffer);
         file.close();
         return rows;
     } 
@@ -354,12 +375,9 @@ boost::optional<std::vector<std::set<uint32_t>>> read_primitive_borders(std::str
 }
 
 void invert_normals(pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &output_normals, 
-     std::vector<std::set<uint32_t>> &primitive_borders,  uint32_t primitive_border_index) {
+    std::vector<Primitive> &primitive_borders,  uint32_t primitive_border_index) {
     auto current_primitive_borders = primitive_borders[primitive_border_index];
-    // TODO: compute this just once
-    uint32_t min =  *std::min_element(current_primitive_borders.begin(), current_primitive_borders.end());
-    uint32_t max =  *std::max_element(current_primitive_borders.begin(), current_primitive_borders.end());
-    for(uint32_t vertex_index = min ; vertex_index <= max ; ++vertex_index) {
+    for(uint32_t vertex_index = current_primitive_borders.first ; vertex_index <= current_primitive_borders.last ; ++vertex_index) {
         pcl::PointXYZRGBNormal& point_normal = (*output_normals)[vertex_index];
         point_normal.normal_x = - point_normal.normal_x;
         point_normal.normal_y = - point_normal.normal_y;
@@ -367,13 +385,10 @@ void invert_normals(pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &output_normals
     }
 }
 
-boost::optional<uint32_t> get_primitive_border_index(uint32_t point_index, std::vector<std::set<uint32_t>> &primitive_borders) {
+boost::optional<uint32_t> get_primitive_border_index(uint32_t point_index, std::vector<Primitive> &primitive_borders) {
     for (uint32_t primitive_border_index = 0; primitive_border_index < primitive_borders.size(); ++primitive_border_index) {
         auto current_primitive_borders = primitive_borders[primitive_border_index];
-        // TODO: compute this just once
-        uint32_t min =  *std::min_element(current_primitive_borders.begin(), current_primitive_borders.end());
-        uint32_t max =  *std::max_element(current_primitive_borders.begin(), current_primitive_borders.end());
-        if(min <= point_index && point_index <= max) {
+        if(current_primitive_borders.belongs(point_index)) {        
             return primitive_border_index;
         }
     }
@@ -382,7 +397,7 @@ boost::optional<uint32_t> get_primitive_border_index(uint32_t point_index, std::
 
 void detect_bordering_points(
             pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud, 
-            std::vector<std::set<uint32_t>> &primitive_borders,
+            std::vector<Primitive> &primitive_borders,
             std::map<uint32_t, std::vector<BorderingPoint>> &bordering_points) {
     pcl::KdTreeFLANN<pcl::PointXYZ> kdtree;
     kdtree.setInputCloud(point_cloud);
@@ -391,7 +406,7 @@ void detect_bordering_points(
     std::vector<int> pointIdxNKNSearch(K);
     std::vector<float> pointNKNSquaredDistance(K);
     for(uint32_t border_index = 0 ; border_index < primitive_borders.size() ; ++border_index) {
-        std::set<uint32_t> borders = primitive_borders[border_index];
+        std::set<uint32_t> borders = primitive_borders[border_index].borders;
         // for each border get the closest node such that it's not in the border
         for(uint32_t const& border_point : borders) {
             pcl::PointXYZ point_in_border = (*point_cloud)[border_point];
@@ -419,7 +434,7 @@ void detect_bordering_points(
 
 boost::optional<uint32_t> viewpoint_normal_consistency(pcl::PointXYZ viewpoint,
         pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
-        std::vector<std::set<uint32_t>> &primitive_borders,
+        std::vector<Primitive> &primitive_borders,
         pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &output_normals) {
     pcl::KdTreeFLANN<pcl::PointXYZ> kdtree;
     kdtree.setInputCloud(point_cloud);
@@ -450,7 +465,7 @@ boost::optional<uint32_t> viewpoint_normal_consistency(pcl::PointXYZ viewpoint,
 
 void make_smooth_manifold(pcl::PolygonMesh &polygon_mesh, 
             pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud, 
-            std::vector<std::set<uint32_t>> &primitive_borders, 
+            std::vector<Primitive> &primitive_borders, 
             pcl::PointXYZ viewpoint,
             pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &output_normals) {
     std::map<uint32_t, std::vector<BorderingPoint>> bordering_points;
@@ -499,7 +514,7 @@ int main (int argc, char** argv)
     auto ply_path_opt = get_ply_path(argc, argv);
     auto primitive_borders_opt = read_primitive_borders("plane_input_demo.png30000.tsv");
     if(ply_path_opt && primitive_borders_opt) {
-        std::vector<std::set<uint32_t>> primitive_borders = *primitive_borders_opt;
+        std::vector<Primitive> primitive_borders = *primitive_borders_opt;
         cout << "Number of primitives: " << primitive_borders.size() << std::endl;
         std::string ply_path = *ply_path_opt;
         pcl::PolygonMesh::Ptr smoothed_mesh = load_mesh(ply_path);
@@ -523,11 +538,11 @@ int main (int argc, char** argv)
         //poisson.setInputCloud(output_normals);
         //poisson.reconstruct(*smoothed_mesh);
 
-        //auto viewer = visualize(smoothed_mesh, output_normals);
-        //while (!viewer->wasStopped ()){
-        //    viewer->spinOnce (100);
-        //    boost::this_thread::sleep (boost::posix_time::microseconds (100000));
-       // }
+        auto viewer = visualize(smoothed_mesh, output_normals);
+        while (!viewer->wasStopped ()){
+            viewer->spinOnce (100);
+            boost::this_thread::sleep (boost::posix_time::microseconds (100000));
+        }
 
         return 0;
     } else {
