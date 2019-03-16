@@ -115,6 +115,16 @@ namespace roboshape {
 
     };
 
+    boost::optional<uint32_t> get_primitive_border_index(uint32_t point_index, std::vector<roboshape::Primitive> &primitive_borders) {
+        for (uint32_t primitive_border_index = 0; primitive_border_index < primitive_borders.size(); ++primitive_border_index) {
+            auto current_primitive_borders = primitive_borders[primitive_border_index];
+            if(current_primitive_borders.belongs(point_index)) {        
+                return primitive_border_index;
+            }
+        }
+        return {};
+    }
+
     void generate_mesh(pcl::PolygonMesh &polygon_mesh, pcl::PointCloud<pcl::PointXYZ> &point_cloud,  
         Mesh& mesh, Mesh::VertexIndices& vertex_indices) {
         for(pcl::PointXYZ const& vertex : point_cloud.points) {

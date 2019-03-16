@@ -4,16 +4,6 @@
 
 namespace roboshape { 
 
-    boost::optional<uint32_t> get_primitive_border_index(uint32_t point_index, std::vector<roboshape::Primitive> &primitive_borders) {
-        for (uint32_t primitive_border_index = 0; primitive_border_index < primitive_borders.size(); ++primitive_border_index) {
-            auto current_primitive_borders = primitive_borders[primitive_border_index];
-            if(current_primitive_borders.belongs(point_index)) {        
-                return primitive_border_index;
-            }
-        }
-        return {};
-    }
-
     void invert_normals(pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &output_normals, 
         std::vector<roboshape::Primitive> &primitive_borders,  uint32_t primitive_border_index) {
         auto current_primitive_borders = primitive_borders[primitive_border_index];
@@ -37,7 +27,7 @@ namespace roboshape {
         if ( kdtree.nearestKSearch(viewpoint, K, pointIdxNKNSearch, pointNKNSquaredDistance) > 0 )
         {
             size_t closest_to_viewpoint = pointIdxNKNSearch[0];
-            auto border_index_opt = get_primitive_border_index(closest_to_viewpoint, primitive_borders);
+            auto border_index_opt = roboshape::get_primitive_border_index(closest_to_viewpoint, primitive_borders);
             if(border_index_opt) {
                 uint32_t border_index = *border_index_opt;
                 cout << "Primitive index of point closest to viewpoint: " << border_index << std::endl;
@@ -62,6 +52,7 @@ namespace roboshape {
                 std::map<uint32_t, std::vector<roboshape::BorderingPoint>> &bordering_points) {
         cout << "Begin detection of bordering points..." << std::endl;
         pcl::KdTreeFLANN<pcl::PointXYZ> kdtree;
+        std::set<uint32_t> processed_points;
         kdtree.setInputCloud(point_cloud);
         pcl::PointXYZ searchPoint;
         int K = 5;
@@ -71,25 +62,31 @@ namespace roboshape {
             std::set<uint32_t> borders = primitive_borders[primitive_index].borders;
             // for each border get the closest node such that it's not in the border
             for(uint32_t const& border_point : borders) {
-                pcl::PointXYZ point_in_border = (*point_cloud)[border_point];
-                auto total_found = kdtree.nearestKSearch(point_in_border, K, pointIdxNKNSearch, pointNKNSquaredDistance);
-                if(total_found  > 0) {
-                    bool found = false;
-                    for(uint32_t current_neighbour = 0 ; !found && current_neighbour < total_found ; current_neighbour++) {                
-                        auto current_index = pointIdxNKNSearch[current_neighbour];
-                        auto primitive_of_index_opt = get_primitive_border_index(current_index, primitive_borders);                    
-                        if(primitive_of_index_opt){                        
-                            found = *primitive_of_index_opt != primitive_index;
-                            if(found){
-                                auto current_bordering_point = roboshape::BorderingPoint(border_point, primitive_index, current_index, *primitive_of_index_opt);
-                                if(bordering_points.find(primitive_index) == bordering_points.end()){
-                                    bordering_points[primitive_index] = std::vector<roboshape::BorderingPoint>();
+                if(processed_points.find(border_point) != processed_points.end()) {    
+                    pcl::PointXYZ point_in_border = (*point_cloud)[border_point];
+                    auto total_found = kdtree.nearestKSearch(point_in_border, K, pointIdxNKNSearch, pointNKNSquaredDistance);
+                    if(total_found  > 0) {
+                        bool found = false;
+                        for(uint32_t current_neighbour = 0 ; !found && current_neighbour < total_found ; current_neighbour++) {                
+                            if(processed_points.find(current_neighbour) != processed_points.end()) {    
+                                auto current_index = pointIdxNKNSearch[current_neighbour];
+                                auto primitive_of_index_opt = roboshape::get_primitive_border_index(current_index, primitive_borders);                    
+                                if(primitive_of_index_opt){                        
+                                    found = *primitive_of_index_opt != primitive_index;
+                                    if(found){
+                                        auto current_bordering_point = roboshape::BorderingPoint(border_point, primitive_index, current_index, *primitive_of_index_opt);
+                                        if(bordering_points.find(primitive_index) == bordering_points.end()){
+                                            bordering_points[primitive_index] = std::vector<roboshape::BorderingPoint>();
+                                        }
+                                        bordering_points[primitive_index].push_back(current_bordering_point);
+                                    }
                                 }
-                                bordering_points[primitive_index].push_back(current_bordering_point);
+                                processed_points.insert(current_neighbour);
                             }
                         }
                     }
                 }
+                processed_points.insert(border_point);
             }
         }
         cout << "... end of detection of bordering points" << std::endl;
