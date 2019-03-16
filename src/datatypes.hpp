@@ -2,13 +2,8 @@
 
 // pcl
 #include <pcl/point_types.h>
-#include <pcl/io/pcd_io.h>
-#include <pcl/io/ply_io.h>
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/surface/mls.h>
-#include <pcl/io/ply_io.h>
-#include <pcl/io/ascii_io.h>
-#include <pcl/io/vtk_lib_io.h>
 #include <pcl/conversions.h>
 #include <pcl/surface/poisson.h>
 #include <pcl/filters/passthrough.h>
@@ -17,7 +12,6 @@
 #include <pcl/features/principal_curvatures.h>
 #include <pcl/common/common_headers.h>
 #include <pcl/features/normal_3d.h>
-#include <pcl/visualization/pcl_visualizer.h>
 #include <pcl/console/parse.h>
 #include <pcl/geometry/triangle_mesh.h>
 #include <pcl/geometry/quad_mesh.h>
@@ -32,6 +26,7 @@
 
 // std
 #include <set>
+#include <stack>
 #include <tgmath.h> 
 #include <numeric>  
 #include <iostream>
@@ -95,7 +90,7 @@ namespace roboshape {
 
         boost::optional<uint32_t> index_right(uint32_t point_index) {
             if(point_index + 1 % this->grain == 0) {
-                return {}; // right edge
+                return {}; 
             } else {
                 return point_index + 1;
             }
@@ -103,7 +98,7 @@ namespace roboshape {
 
         boost::optional<uint32_t> index_left(uint32_t point_index) {
             if(point_index % this->grain == 0) {
-                return {}; // left edge
+                return {}; 
             } else {
                 return point_index - 1;
             }
@@ -114,6 +109,27 @@ namespace roboshape {
         }
 
     };
+
+    std::vector<Primitive> generate_primitives(int number_of_primitives, int number_of_proints) {
+        int grain = ((int)sqrt(number_of_proints / number_of_primitives )) - 1;
+        std::vector<Primitive> primitives;
+        for(int primitive_index = 0 ; primitive_index < number_of_primitives ; primitive_index++){
+            int offset = ( grain + 1 ) * ( grain + 1 ) * primitive_index;
+            std::set<uint32_t> borders;
+            for(int step = 0 ; step < grain + 1 ; step++) {
+                int first_column = offset + ( ( grain + 1 ) * step);
+                int last_column  = offset + grain + ( ( grain + 1 ) * step);
+                int first_row    = offset + step;
+                int last_row     = offset + step + ( ( grain + 1 ) * grain );
+                borders.insert(first_column);
+                borders.insert(last_column);
+                borders.insert(first_row);
+                borders.insert(last_row);
+            }
+            primitives.push_back(Primitive(borders));
+        }
+        return primitives;
+    }
 
     boost::optional<uint32_t> get_primitive_border_index(uint32_t point_index, std::vector<roboshape::Primitive> &primitive_borders) {
         for (uint32_t primitive_border_index = 0; primitive_border_index < primitive_borders.size(); ++primitive_border_index) {

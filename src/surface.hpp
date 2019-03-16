@@ -79,6 +79,13 @@ namespace roboshape {
                                             bordering_points[primitive_index] = std::vector<roboshape::BorderingPoint>();
                                         }
                                         bordering_points[primitive_index].push_back(current_bordering_point);
+                                        // neigubours are symmetric/commutative: neighbour(a, b) = neighbour(b, a) 
+                                        auto reverse_bordering_point = roboshape::BorderingPoint(current_index, *primitive_of_index_opt, border_point, primitive_index);
+                                        if(bordering_points.find(*primitive_of_index_opt) == bordering_points.end()){
+                                            bordering_points[*primitive_of_index_opt] = std::vector<roboshape::BorderingPoint>();
+                                        }
+                                        bordering_points[*primitive_of_index_opt].push_back(reverse_bordering_point);
+                                        processed_points.insert(*primitive_of_index_opt);
                                     }
                                 }
                                 processed_points.insert(current_neighbour);

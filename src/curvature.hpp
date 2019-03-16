@@ -123,32 +123,34 @@ namespace roboshape {
     }
 
     void extract_planes(std::vector<roboshape::Primitive> &primitives, 
-            pcl::PolygonMesh &mesh, pcl::PointCloud<pcl::PointXYZ> &point_cloud, 
-            pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &normals)  {
+             pcl::PointCloud<pcl::PointXYZ> &point_cloud, 
+             pcl::PolygonMesh &output_mesh,
+            pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr &outpu_normals)  {
         std::shared_ptr<std::map<uint32_t, std::vector<int>>> point_index_to_neighbours (new std::map<uint32_t, std::vector<int>>);
         cout << "Starting plane extraction..." << std::endl; 
-        extract_point_index_to_neighbours(mesh, point_cloud, point_index_to_neighbours);
+        extract_point_index_to_neighbours(output_mesh, point_cloud, point_index_to_neighbours);
         for(auto primitive : primitives) {
             for(uint32_t point_index = primitive.first ; point_index <= primitive.last ; ++point_index) {
                 auto neighbours = point_index_to_neighbours->find(point_index);
                 if(neighbours != point_index_to_neighbours->end()) {
                 auto point_and_neighbours = *neighbours;
-                    auto curvature_opt = extract_curvature(primitive, point_and_neighbours.first, point_and_neighbours.second, normals);
+                    auto curvature_opt = extract_curvature(primitive, point_and_neighbours.first, point_and_neighbours.second, outpu_normals);
                     if(curvature_opt) { 
                         float curvature = *curvature_opt;
-                        if(curvature > 1.0) {
+                        if(curvature > 1.5) {
                             uint8_t r = 200, g = 50, b = 50;
                             uint32_t rgb = ((uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b);
-                            (   *normals)[point_and_neighbours.first].rgb = *reinterpret_cast<float*>(&rgb);
+                            (   *outpu_normals)[point_and_neighbours.first].rgb = *reinterpret_cast<float*>(&rgb);
                         } else {
                             uint8_t r = 0, g = 0, b = 255;
                             uint32_t rgb = ((uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b);
-                            (   *normals)[point_and_neighbours.first].rgb = *reinterpret_cast<float*>(&rgb);
+                            (   *outpu_normals)[point_and_neighbours.first].rgb = *reinterpret_cast<float*>(&rgb);
                         }
                     }
                 }
             }
         }
+        pcl::toPCLPointCloud2(*outpu_normals, output_mesh.cloud);
         cout << "... end of plane extraction." << std::endl;     
     }
 
